@@ -9,6 +9,9 @@ import (
 	"os"
 	"regexp"
 	"sync/atomic"
+	"time"
+
+	"github.com/juju/ratelimit"
 )
 
 // The basic proxy type. Implements http.Handler.
@@ -27,6 +30,9 @@ type ProxyHttpServer struct {
 	// ConnectDial will be used to create TCP connections for CONNECT requests
 	// if nil Tr.Dial will be used
 	ConnectDial func(network string, addr string) (net.Conn, error)
+
+	TokenBucket    *ratelimit.Bucket
+	MinimumLatency time.Duration
 }
 
 var hasPort = regexp.MustCompile(`:\d+$`)
@@ -134,9 +140,17 @@ func (proxy *ProxyHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		if origBody != resp.Body {
 			resp.Header.Del("Content-Length")
 		}
+
+		// Throttle response reader
+		var reader io.Reader
+		if proxy.TokenBucket != nil {
+			reader = ratelimit.Reader(resp.Body, proxy.TokenBucket)
+		} else {
+			reader = resp.Body
+		}
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		nr, err := io.Copy(w, resp.Body)
+		nr, err := io.Copy(w, reader)
 		if err := resp.Body.Close(); err != nil {
 			ctx.Warnf("Can't close response body %v", err)
 		}

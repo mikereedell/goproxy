@@ -3,6 +3,7 @@ package goproxy
 import (
 	"net/http"
 	"regexp"
+	"time"
 )
 
 // ProxyCtx is the Proxy context, contains useful information about every request. It is passed to
@@ -21,6 +22,8 @@ type ProxyCtx struct {
 	// Will connect a request to a response
 	Session int64
 	proxy   *ProxyHttpServer
+
+	Duration time.Duration
 }
 
 type RoundTripper interface {
@@ -35,9 +38,25 @@ func (f RoundTripperFunc) RoundTrip(req *http.Request, ctx *ProxyCtx) (*http.Res
 
 func (ctx *ProxyCtx) RoundTrip(req *http.Request) (*http.Response, error) {
 	if ctx.RoundTripper != nil {
-		return ctx.RoundTripper.RoundTrip(req, ctx)
+		start := time.Now()
+		res, err := ctx.RoundTripper.RoundTrip(req, ctx)
+		ctx.Duration = time.Now().Sub(start)
+		return res, err
 	}
-	return ctx.proxy.Tr.RoundTrip(req)
+	start := time.Now()
+	res, err := ctx.proxy.Tr.RoundTrip(req)
+	ctx.Duration = time.Now().Sub(start)
+	ctx.adjustLatency()
+	return res, err
+}
+
+// Adds latency to the processing of the response in order to reach configured minimum latency target.
+func (ctx *ProxyCtx) adjustLatency() {
+	if ctx.Duration > ctx.proxy.MinimumLatency {
+		return
+	} else {
+		time.Sleep(ctx.proxy.MinimumLatency - ctx.Duration)
+	}
 }
 
 func (ctx *ProxyCtx) printf(msg string, argv ...interface{}) {
